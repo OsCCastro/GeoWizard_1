@@ -33,8 +33,12 @@ from PySide6.QtWidgets import (
 
 from config_dialog import ConfigDialog
 from help_dialog import HelpDialog
-from core.coordinate_manager import CoordinateManager
+from core.coordinate_manager import CoordinateManager, GeometryType
 from exporters.kml_exporter import KMLExporter
+from exporters.kmz_exporter import KMZExporter # Asumiendo que existe
+from exporters.shapefile_exporter import ShapefileExporter # Asumiendo que existe
+from importers.csv_importer import CSVImporter
+from importers.kml_importer import KMLImporter # Importar KMLImporter
 from core.geometry import GeometryBuilder
 
 
@@ -235,8 +239,12 @@ class MainWindow(QMainWindow):
                     id_it.setFlags(Qt.ItemIsEnabled)
                     self.table.setItem(nr,0,id_it)
         # refresca preview
-        mgr = self._build_manager_from_table()
-        self._redraw_scene(mgr)
+        try:
+            mgr = self._build_manager_from_table()
+            self._redraw_scene(mgr)
+        except (ValueError, TypeError) as e:
+            print(f"Error al construir features para preview: {e}")
+
 
     def _on_cell_clicked(self, row, col):
         if col == 0:
@@ -273,25 +281,59 @@ class MainWindow(QMainWindow):
         r = self.table.currentRow()
         if r >= 0:
             self.table.removeRow(r)
+        try:
+            mgr = self._build_manager_from_table()
+            self._redraw_scene(mgr)
+        except (ValueError, TypeError) as e:
+            print(f"Error al construir features para preview tras eliminar fila: {e}")
+
 
     def _paste_to_table(self):
         lines = QApplication.clipboard().text().splitlines()
         r = self.table.currentRow()
-        for ln in lines:
+        if r < 0:
+            r = 0
+            if self.table.item(r,0) and not (self.table.item(r,0).flags() & Qt.ItemIsEditable):
+                pass
+
+        for ln_idx, ln in enumerate(lines):
+            if not ln.strip():
+                continue
+
+            current_id_item = self.table.item(r, 0)
+            is_id_cell_uneditable = current_id_item and not (current_id_item.flags() & Qt.ItemIsEditable)
+
+            if r >= self.table.rowCount():
+                self.table.insertRow(r)
+                id_it = QTableWidgetItem(str(r+1))
+                id_it.setFlags(Qt.ItemIsEnabled)
+                self.table.setItem(r,0,id_it)
+            elif is_id_cell_uneditable and (self.table.item(r,1) and self.table.item(r,1).text() or \
+                                          self.table.item(r,2) and self.table.item(r,2).text()):
+                pass
+
             pts = [p.strip() for p in ln.split(",")]
+            if len(pts) < 2:
+                pts = [p.strip() for p in ln.split("\t")]
+
             if len(pts) >= 2:
                 try:
-                    float(pts[0]); float(pts[1])
+                    float(pts[0].replace(',','.'))
+                    float(pts[1].replace(',','.'))
                 except ValueError:
+                    QMessageBox.warning(self, "Error de Pegado", f"Línea '{ln}' no contiene coordenadas X,Y numéricas válidas.")
                     continue
-                if r >= self.table.rowCount():
-                    self.table.insertRow(r)
-                    id_it = QTableWidgetItem(str(r+1))
-                    id_it.setFlags(Qt.ItemIsEnabled)
-                    self.table.setItem(r,0,id_it)
-                self.table.setItem(r,1, QTableWidgetItem(pts[0]))
-                self.table.setItem(r,2, QTableWidgetItem(pts[1]))
+
+                self.table.setItem(r,1, QTableWidgetItem(pts[0].replace(',','.')))
+                self.table.setItem(r,2, QTableWidgetItem(pts[1].replace(',','.')))
                 r += 1
+
+        try:
+            mgr = self._build_manager_from_table()
+            self._redraw_scene(mgr)
+        except (ValueError, TypeError) as e:
+             print(f"Error al construir features para preview tras pegar: {e}")
+
 
     def _build_manager_from_table(self):
         coords = []
@@ -299,38 +341,63 @@ class MainWindow(QMainWindow):
             xi = self.table.item(r,1); yi = self.table.item(r,2)
             if xi and yi and xi.text().strip() and yi.text().strip():
                 try:
-                    coords.append((float(xi.text()), float(yi.text())))
+                    x_val = float(xi.text())
+                    y_val = float(yi.text())
+                    coords.append((x_val, y_val))
                 except ValueError:
                     pass
+
         mgr = CoordinateManager(
             hemisphere=self.cb_hemisferio.currentText(),
             zone=int(self.cb_zona.currentText())
         )
         nid = 1
-        if self.chk_punto.isChecked():
-            for x,y in coords:
-                mgr.add_feature(nid, "Point", [(x,y)])
-                nid += 1
-        if self.chk_polilinea.isChecked() and len(coords) >= 2:
-            mgr.add_feature(nid, "LineString", coords)
-            nid += 1
-        if self.chk_poligono.isChecked() and len(coords) >= 3:
-            # cierre de anillo solo para Polygon
-            mgr.add_feature(nid, "Polygon", coords + [coords[0]])
-            nid += 1
+
+        if coords:
+            if self.chk_punto.isChecked():
+                for x,y in coords:
+                    try:
+                        mgr.add_feature(nid, GeometryType.PUNTO, [(x,y)])
+                        nid += 1
+                    except (ValueError, TypeError) as e:
+                        QMessageBox.warning(self, "Error al crear Punto", f"Feature ID {nid}: {e}")
+
+            if self.chk_polilinea.isChecked():
+                if len(coords) >= 2:
+                    try:
+                        mgr.add_feature(nid, GeometryType.POLILINEA, coords)
+                        nid += 1
+                    except (ValueError, TypeError) as e:
+                        QMessageBox.warning(self, "Error al crear Polilínea", f"Feature ID {nid}: {e}")
+                elif self.chk_polilinea.isEnabled() and self.chk_polilinea.isChecked():
+                     QMessageBox.warning(self, "Datos insuficientes", "Se necesitan al menos 2 coordenadas para una Polilínea.")
+
+            if self.chk_poligono.isChecked():
+                if len(coords) >= 3:
+                    try:
+                        mgr.add_feature(nid, GeometryType.POLIGONO, coords)
+                        nid += 1
+                    except (ValueError, TypeError) as e:
+                        QMessageBox.warning(self, "Error al crear Polígono", f"Feature ID {nid}: {e}")
+                elif self.chk_poligono.isEnabled() and self.chk_poligono.isChecked():
+                    QMessageBox.warning(self, "Datos insuficientes", "Se necesitan al menos 3 coordenadas para un Polígono.")
         return mgr
 
     def _redraw_scene(self, mgr):
         self.scene.clear()
-        # puntos primero
+        if not mgr:
+            return
+
         if self.chk_punto.isChecked():
             for feat in mgr.get_features():
-                if feat["type"] == "Point":
-                    x,y = feat["coords"][0]
-                    self.scene.addEllipse(x-3, y-3, 6, 6,
-                                        QPen(Qt.red), QBrush(Qt.red))
-        # luego líneas/polígonos
-        for path, pen in GeometryBuilder.paths_from_features(mgr.get_features()):
+                if feat["type"] == GeometryType.PUNTO:
+                    if feat["coords"]:
+                        x,y = feat["coords"][0]
+                        self.scene.addEllipse(x-3, y-3, 6, 6,
+                                            QPen(Qt.red), QBrush(Qt.red))
+
+        features_for_paths = mgr.get_features()
+        for path, pen in GeometryBuilder.paths_from_features(features_for_paths):
             self.scene.addPath(path, pen)
 
     def _on_guardar(self):
@@ -338,17 +405,49 @@ class MainWindow(QMainWindow):
         if not dirp:
             return
         proj = self.le_nombre.text().strip() or "proyecto"
-        full = os.path.join(dirp, proj + self.cb_format.currentText())
-        mgr = self._build_manager_from_table()
+        full_path_filename = os.path.join(dirp, proj + self.cb_format.currentText())
+
         try:
-            KMLExporter.export(
-                mgr.get_features(), full,
-                hemisphere=self.cb_hemisferio.currentText(),
-                zone=self.cb_zona.currentText()
-            )
-            QMessageBox.information(self, "Éxito", f"Archivo guardado en:\n{full}")
+            mgr = self._build_manager_from_table()
+        except (ValueError, TypeError) as e:
+            QMessageBox.critical(self, "Error en datos de tabla", f"No se pueden generar las geometrías para exportar: {e}")
+            return
+
+        selected_format = self.cb_format.currentText()
+
+        features = mgr.get_features()
+        if not features:
+            QMessageBox.warning(self, "Nada para exportar", "No hay geometrías definidas para exportar.")
+            return
+
+        hemisphere = self.cb_hemisferio.currentText()
+        zone = self.cb_zona.currentText()
+
+        try:
+            export_successful = False
+            if selected_format == ".kml":
+                KMLExporter.export(features, full_path_filename, hemisphere, zone)
+                export_successful = True
+            elif selected_format == ".kmz":
+                KMZExporter.export(features, full_path_filename, hemisphere, zone)
+                export_successful = True
+            elif selected_format == ".shp":
+                ShapefileExporter.export(features, full_path_filename, hemisphere, zone)
+                export_successful = True
+            else:
+                QMessageBox.warning(self, "Formato no soportado",
+                                    f"La exportación al formato '{selected_format}' aún no está implementada.")
+                return
+
+            if export_successful:
+                QMessageBox.information(self, "Éxito", f"Archivo guardado en:\n{full_path_filename}")
+
+        except ImportError as ie:
+            QMessageBox.critical(self, "Error de dependencia",
+                                 f"No se pudo exportar a '{selected_format}'. Dependencia faltante: {str(ie)}. Verifique la instalación.")
         except Exception as e:
-            QMessageBox.critical(self, "Error al guardar", str(e))
+            QMessageBox.critical(self, "Error al guardar",
+                                 f"Ocurrió un error al guardar en formato '{selected_format}':\n{str(e)}")
 
     def _on_export(self):
         self._on_guardar()
@@ -358,33 +457,161 @@ class MainWindow(QMainWindow):
         self.table.setRowCount(1)
         first = QTableWidgetItem("1"); first.setFlags(Qt.ItemIsEnabled)
         self.table.setItem(0,0,first)
-        self.scene.clear()
+        if self.scene:
+            self.scene.clear()
+
+        self.chk_punto.setChecked(False)
+        self.chk_polilinea.setChecked(False)
+        self.chk_poligono.setChecked(False)
+        self.le_nombre.clear()
 
     def _on_open(self):
+        filters = "Archivos de Proyecto SIG (*.kml *.kmz *.shp);;Todos los archivos (*)"
         path, _ = QFileDialog.getOpenFileName(
-            self, "Abrir proyecto", "", "SIG Files (*.kml *.kmz *.shp *.csv *.txt)"
+            self, "Abrir Proyecto", "", filters
         )
         if path:
+            QMessageBox.information(self, "Abrir Proyecto", f"Funcionalidad de abrir proyecto '{path}' aún no implementada.")
             print(f"Abrir proyecto: {path}")
 
     def _on_import(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Importar coordenadas", "", "Coordenadas (*.csv *.txt *.kml)"
+        filters = "Archivos de Coordenadas (*.csv *.txt);;Archivos KML (*.kml);;Todos los archivos (*)"
+        path, selected_filter = QFileDialog.getOpenFileName(
+            self, "Importar Coordenadas o Geometrías", "", filters
         )
-        if path:
-            print(f"Importar desde: {path}")
+
+        if not path:
+            return
+
+        file_ext = os.path.splitext(path)[1].lower()
+
+        if file_ext in ['.csv', '.txt']:
+            try:
+                imported_features = CSVImporter.import_file(path)
+
+                if not imported_features:
+                    QMessageBox.information(self, "Importación CSV", "No se importaron geometrías válidas desde el archivo.")
+                    return
+
+                self._on_new()
+
+                self.table.setRowCount(len(imported_features))
+                for i, feat in enumerate(imported_features):
+                    feat_id = feat.get("id", i + 1)
+                    coords_list = feat.get("coords", [])
+
+                    id_item = QTableWidgetItem(str(feat_id))
+                    id_item.setFlags(Qt.ItemIsEnabled)
+                    self.table.setItem(i, 0, id_item)
+
+                    if coords_list and isinstance(coords_list[0], (list, tuple)) and len(coords_list[0]) == 2:
+                        x_coord, y_coord = coords_list[0]
+                        self.table.setItem(i, 1, QTableWidgetItem(str(x_coord if x_coord is not None else "")))
+                        self.table.setItem(i, 2, QTableWidgetItem(str(y_coord if y_coord is not None else "")))
+                    else:
+                        self.table.setItem(i, 1, QTableWidgetItem(""))
+                        self.table.setItem(i, 2, QTableWidgetItem(""))
+                        print(f"Advertencia: Feature ID {feat_id} importado sin coordenadas válidas.")
+
+                self.chk_punto.setChecked(True)
+                self.chk_polilinea.setChecked(False)
+                self.chk_poligono.setChecked(False)
+
+                try:
+                    mgr = self._build_manager_from_table()
+                    self._redraw_scene(mgr)
+                    QMessageBox.information(self, "Importación CSV Exitosa",
+                                            f"{len(imported_features)} puntos importados desde {os.path.basename(path)}.")
+                except (ValueError, TypeError) as e:
+                    QMessageBox.critical(self, "Error al procesar datos importados",
+                                         f"Los datos CSV importados no pudieron ser procesados: {e}")
+
+            except FileNotFoundError:
+                QMessageBox.critical(self, "Error de Importación", f"Archivo no encontrado: {path}")
+            except RuntimeError as e:
+                QMessageBox.critical(self, "Error de Importación", f"Error al importar archivo CSV: {e}")
+            except Exception as e:
+                QMessageBox.critical(self, "Error Inesperado", f"Ocurrió un error inesperado durante la importación CSV: {e}")
+
+        elif file_ext == '.kml':
+            try:
+                hemisphere = self.cb_hemisferio.currentText()
+                zone_str = self.cb_zona.currentText()
+                if not zone_str:
+                    QMessageBox.warning(self, "Zona no seleccionada", "Por favor, seleccione una zona UTM antes de importar KML.")
+                    return
+                zone = int(zone_str)
+
+                imported_features = KMLImporter.import_file(path, hemisphere, zone)
+
+                if not imported_features:
+                    QMessageBox.information(self, "Importación KML", "No se importaron geometrías válidas desde el archivo KML.")
+                    return
+
+                self._on_new()
+
+                self.table.setRowCount(len(imported_features))
+                for i, feat in enumerate(imported_features):
+                    id_item = QTableWidgetItem(str(feat.get("id", i + 1)))
+                    id_item.setFlags(Qt.ItemIsEnabled)
+                    self.table.setItem(i, 0, id_item)
+
+                    coords = feat.get("coords")
+                    geom_type_from_kml = feat.get("type") # "Punto", "Polilínea", "Polígono"
+
+                    if geom_type_from_kml == GeometryType.PUNTO and coords and len(coords) == 1:
+                        if isinstance(coords[0], (list,tuple)) and len(coords[0]) == 2:
+                             x_coord, y_coord = coords[0]
+                             self.table.setItem(i, 1, QTableWidgetItem(f"{x_coord:.2f}"))
+                             self.table.setItem(i, 2, QTableWidgetItem(f"{y_coord:.2f}"))
+                        else:
+                             self.table.setItem(i, 1, QTableWidgetItem(""))
+                             self.table.setItem(i, 2, QTableWidgetItem(""))
+                             print(f"Advertencia: Feature Punto ID {feat.get('id')} con formato de coordenadas incorrecto en la importación KML.")
+                    else:
+                        self.table.setItem(i, 1, QTableWidgetItem(""))
+                        self.table.setItem(i, 2, QTableWidgetItem(f"({geom_type_from_kml})")) # Indicar tipo en celda Y
+
+                # No se cambian los checkboxes. El usuario debe seleccionar el tipo apropiado
+                # para que _build_manager_from_table construya las geometrías deseadas.
+                # Se informa al usuario.
+
+                try:
+                    mgr = self._build_manager_from_table()
+                    self._redraw_scene(mgr)
+                    QMessageBox.information(self, "Importación KML Exitosa",
+                                            f"{len(imported_features)} geometrías importadas desde {os.path.basename(path)}.\n"
+                                            "Active los checkboxes de tipo de geometría (Punto, Polilínea, Polígono)\n"
+                                            "para visualizar y procesar los datos importados.")
+                except (ValueError, TypeError) as e:
+                     QMessageBox.critical(self, "Error al procesar datos KML importados",
+                                          f"Los datos KML importados no pudieron ser procesados: {e}")
+
+            except FileNotFoundError:
+                QMessageBox.critical(self, "Error de Importación KML", f"Archivo no encontrado: {path}")
+            except (RuntimeError, ValueError) as e:
+                QMessageBox.critical(self, "Error de Importación KML", f"Error al importar archivo KML: {e}")
+            except Exception as e:
+                QMessageBox.critical(self, "Error Inesperado", f"Ocurrió un error inesperado durante la importación KML: {e}")
+        else:
+            QMessageBox.warning(self, "Formato no Soportado",
+                                f"La importación del formato de archivo '{file_ext}' aún no está implementada.")
 
     def _on_undo(self):
+        QMessageBox.information(self, "Deshacer", "Funcionalidad de Deshacer aún no implementada.")
         print("Deshacer acción")
 
     def _on_redo(self):
+        QMessageBox.information(self, "Rehacer", "Funcionalidad de Rehacer aún no implementada.")
         print("Rehacer acción")
 
     def _on_settings(self):
-        ConfigDialog(self).exec()
+        dialog = ConfigDialog(self)
+        dialog.exec()
 
     def _on_help(self):
-        HelpDialog(self).exec()
+        dialog = HelpDialog(self)
+        dialog.exec()
 
 if __name__ == "__main__":
     import sys

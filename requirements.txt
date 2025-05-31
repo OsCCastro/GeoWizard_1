@@ -1,5 +1,3 @@
-# - PySide6
-# - watchdog
-# - simplekml
-# - pandas
-# - fiona (opcional para shapefile)
+PySide6~=6.0
+pyproj~=3.0
+fiona~=1.8
