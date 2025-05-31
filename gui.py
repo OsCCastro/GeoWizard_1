@@ -52,12 +52,10 @@ class UTMDelegate(QStyledItemDelegate):
 
     def setModelData(self, editor, model, index):
         text = editor.text()
-        model.setData(index, text)
-        # solo cambia color de texto si no está seleccionado
-        if not (model.data(index, Qt.ItemIsSelectable) and
-                model.data(index, Qt.BackgroundRole)):
-            color = Qt.black if editor.hasAcceptableInput() else Qt.red
-            model.setData(index, QBrush(color), Qt.ForegroundRole)
+        model.setData(index, text) # Set the actual data
+        # Always apply foreground color based on input validity for cells managed by this delegate
+        color = Qt.black if editor.hasAcceptableInput() else Qt.red
+        model.setData(index, QBrush(color), Qt.ForegroundRole)
 
 class CoordTable(QTableWidget):
     def keyPressEvent(self, event):
