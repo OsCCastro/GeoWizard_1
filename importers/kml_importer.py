@@ -28,10 +28,6 @@ class KMLImporter:
                 print(f"Advertencia: Coordenada KML malformada o no numérica '{part}' omitida.")
                 continue
 
-        # Para polígonos KML, el LinearRing usualmente está cerrado.
-        # Se quita el último punto si es idéntico al primero para consistencia interna,
-        # ya que la aplicación cierra los polígonos al exportar/visualizar si es necesario.
-        # Usar los tipos de geometría de la aplicación ("Punto", "Polilínea", "Polígono")
         if geom_type_str_for_ring_check == "Polígono" and \
            len(points) > 1 and points[0] == points[-1]:
             points = points[:-1]
@@ -41,25 +37,13 @@ class KMLImporter:
     def import_file(filepath: str, target_hemisphere: str, target_zone: int) -> list[dict]:
         """
         Importa geometrías desde un archivo KML, transformándolas al sistema UTM especificado.
-
-        Args:
-            filepath: Ruta al archivo KML.
-            target_hemisphere: Hemisferio de destino ("Norte" o "Sur").
-            target_zone: Zona UTM de destino (entero, 1-60).
-
-        Returns:
-            Una lista de diccionarios de features.
-
-        Raises:
-            FileNotFoundError: Si el archivo KML no se encuentra.
-            RuntimeError: Para errores de parseo KML, transformación de coordenadas, u otros.
-            ValueError: Para parámetros de zona/hemisferio inválidos.
+        (Resto del docstring igual)
         """
         features = []
         sequential_id_counter = 1
 
         try:
-            zone_int = int(target_zone) # Asegurar que target_zone sea int
+            zone_int = int(target_zone)
             if not (1 <= zone_int <= 60):
                 raise ValueError(f"Zona UTM '{target_zone}' inválida. Debe estar entre 1 y 60.")
             if target_hemisphere.lower() not in ['norte', 'sur']:
@@ -76,20 +60,23 @@ class KMLImporter:
             tree = ET.parse(filepath)
             root = tree.getroot()
 
+            # Extraer el namespace de la etiqueta raíz si está presente
             root_tag = root.tag
-            ns_uri_match = root_tag.match(r'(\{.*\})?kml') # Intenta capturar el namespace
-            ns_uri = ns_uri_match.group(1)[1:-1] if ns_uri_match and ns_uri_match.group(1) else ''
-            ns = {'kml': ns_uri} if ns_uri else {} # Diccionario de namespace vacío si no hay namespace
+            ns_uri = ''
+            if root_tag.startswith('{') and '}' in root_tag:
+                ns_uri = root_tag.split('}')[0][1:]
 
-            # Función auxiliar para encontrar elementos con o sin namespace
+            ns = {'kml': ns_uri} if ns_uri else {}
+
+            # Funciones auxiliares para encontrar elementos (se mantienen igual, su lógica es correcta con el ns map)
             def find_element(parent, tag, namespace_dict):
-                if namespace_dict and namespace_dict.get('kml'): # Si hay un namespace kml definido
+                if namespace_dict and namespace_dict.get('kml'):
                     return parent.find(f"kml:{tag}", namespace_dict)
-                return parent.find(tag) # Buscar sin namespace
+                return parent.find(tag)
 
             def findall_elements(parent, tag, namespace_dict):
                 if namespace_dict and namespace_dict.get('kml'):
-                    return parent.findall(f".//kml:{tag}", namespace_dict) # .// para búsqueda global
+                    return parent.findall(f".//kml:{tag}", namespace_dict)
                 return parent.findall(f".//{tag}")
 
 
@@ -165,7 +152,7 @@ class KMLImporter:
                 elif app_geom_type == "Polilínea" and len(transformed_coords_utm) < 2:
                     print(f"Advertencia: Feature Polilínea ID {feature_id} resultó en <2 coordenadas. Omitiendo.")
                     continue
-                elif app_geom_type == "Polígono" and len(transformed_coords_utm) < 3: # 3 puntos base para un polígono
+                elif app_geom_type == "Polígono" and len(transformed_coords_utm) < 3:
                     print(f"Advertencia: Feature Polígono ID {feature_id} resultó en <3 coordenadas base. Omitiendo.")
                     continue
 
