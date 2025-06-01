@@ -1,6 +1,8 @@
 import xml.etree.ElementTree as ET
 from pyproj import Transformer, ProjError
 import os # Para el bloque de pruebas
+import re
+
 
 # from core.coordinate_manager import GeometryType # Para usar constantes de tipo GeometryType.PUNTO etc.
 
@@ -77,8 +79,8 @@ class KMLImporter:
             root = tree.getroot()
 
             root_tag = root.tag
-            ns_uri_match = root_tag.match(r'(\{.*\})?kml') # Intenta capturar el namespace
-            ns_uri = ns_uri_match.group(1)[1:-1] if ns_uri_match and ns_uri_match.group(1) else ''
+            ns_uri_match = re.match(r'\{(.*)\}kml', root_tag)
+            ns_uri = ns_uri_match.group(1) if ns_uri_match else ''
             ns = {'kml': ns_uri} if ns_uri else {} # Diccionario de namespace vacío si no hay namespace
 
             # Función auxiliar para encontrar elementos con o sin namespace

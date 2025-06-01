@@ -1,4 +1,5 @@
 import os
+from PySide6.QtWidgets import QTextEdit
 from PySide6.QtCore import Qt, QRegularExpression, QPointF, QItemSelectionModel
 from PySide6.QtGui import (
     QAction,
@@ -31,6 +32,7 @@ from PySide6.QtWidgets import (
     QTableWidgetItem
 )
 
+from PySide6.QtWidgets import QDialog, QVBoxLayout
 from config_dialog import ConfigDialog
 from help_dialog import HelpDialog
 from core.coordinate_manager import CoordinateManager, GeometryType
@@ -40,7 +42,11 @@ from exporters.shapefile_exporter import ShapefileExporter # Asumiendo que exist
 from importers.csv_importer import CSVImporter
 from importers.kml_importer import KMLImporter # Importar KMLImporter
 from core.geometry import GeometryBuilder
-
+from PySide6.QtGui import QIcon
+from PySide6.QtSvg import QSvgRenderer
+from PySide6.QtGui import QPixmap, QPainter, QColor, QIcon, QPalette
+from PySide6.QtCore import QSize, Qt
+from PySide6.QtGui import QPalette
 
 class UTMDelegate(QStyledItemDelegate):
     def createEditor(self, parent, option, index):
@@ -53,8 +59,7 @@ class UTMDelegate(QStyledItemDelegate):
     def setModelData(self, editor, model, index):
         text = editor.text()
         model.setData(index, text)
-        # solo cambia color de texto si no está seleccionado
-        if not (model.data(index, Qt.ItemIsSelectable) and
+        if not (model.flags(index) & Qt.ItemIsSelectable and
                 model.data(index, Qt.BackgroundRole)):
             color = Qt.black if editor.hasAcceptableInput() else Qt.red
             model.setData(index, QBrush(color), Qt.ForegroundRole)
@@ -73,6 +78,24 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("SIG: Gestión de Coordenadas")
         self._build_ui()
         self._create_toolbar()
+        self._modo_oscuro = False
+        self._toggle_modo(False)
+    
+    def _icono(self, nombre, size=QSize(24, 24)):
+        ruta = f"icons/{nombre}"
+        renderer = QSvgRenderer(ruta)
+        pixmap = QPixmap(size)
+        pixmap.fill(Qt.transparent)
+
+        color = QApplication.palette().color(QPalette.Text)
+
+        painter = QPainter(pixmap)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(color)
+        renderer.render(painter)
+        painter.end()
+
+        return QIcon(pixmap)
 
     def _build_ui(self):
         central = QWidget()
@@ -173,58 +196,90 @@ class MainWindow(QMainWindow):
         self.addToolBar(tb)
 
         # acciones básicas
-        for ico, text, slot in [
-            (QStyle.SP_FileIcon,        "Nuevo",    self._on_new),
-            (QStyle.SP_DialogOpenButton,"Abrir",    self._on_open),
-            (QStyle.SP_DialogSaveButton,"Guardar",  self._on_guardar),
-            (QStyle.SP_DirOpenIcon,     "Importar", self._on_import),
-            (QStyle.SP_DialogSaveButton,"Exportar", self._on_export)
+        for nombre_icono, text, slot in [
+            ("file-fill.svg",       "Nuevo",    self._on_new),
+            ("folder-open-fill.svg","Abrir",    self._on_open),
+            ("save-3-fill.svg",     "Guardar",  self._on_guardar),
+            ("import-fill.svg",     "Importar", self._on_import),
+            ("export-fill.svg",     "Exportar", self._on_export)
         ]:
-            a = QAction(self.style().standardIcon(ico), text, self)
+            a = QAction(self._icono(nombre_icono), text, self)
             a.triggered.connect(slot)
             tb.addAction(a)
 
         tb.addSeparator()
 
-        # deshacer / rehacer
-        for ico, text, slot in [
-            (QStyle.SP_ArrowBack,   "Deshacer", self._on_undo),
-            (QStyle.SP_ArrowForward,"Rehacer",  self._on_redo),
+        for nombre_icono, text, slot in [
+            ("arrow-left-box-fill.svg",  "Deshacer", self._on_undo),
+            ("arrow-right-box-fill.svg", "Rehacer",  self._on_redo),
         ]:
-            a = QAction(self.style().standardIcon(ico), text, self)
+            a = QAction(self._icono(nombre_icono), text, self)
             a.triggered.connect(slot)
             tb.addAction(a)
 
         tb.addSeparator()
 
         # mostrar/ocultar lienzo
-        tog = QAction(self.style().standardIcon(QStyle.SP_TitleBarMaxButton),
-                      "Mostrar/Ocultar lienzo", self)
+        tog = QAction(self._icono("edit-box-fill.svg"), "Mostrar/Ocultar lienzo", self)
         tog.setCheckable(True); tog.setChecked(True)
         tog.toggled.connect(self.canvas.setVisible)
         tb.addAction(tog)
+        btn_html = QAction(self._icono("code-box-fill.svg"), "HTML", self)
+        btn_html.setToolTip("Generar resumen HTML con coordenadas, perímetro y área")
+        btn_html.triggered.connect(self._on_export_html)
+        tb.addAction(btn_html)
 
         tb.addSeparator()
 
         # modo oscuro
-        theme = QAction(self.style().standardIcon(QStyle.SP_DialogYesButton),
-                        "Modo oscuro", self)
-        theme.setCheckable(True)
-        theme.toggled.connect(lambda ch: QApplication.instance().setStyleSheet(
-            "QWidget{background:#2b2b2b;color:#ddd;}" if ch else ""
-        ))
-        tb.addAction(theme)
+        self.action_modo = QAction(self._icono("sun-fill.svg"), "Modo claro", self)
+        self.action_modo.setCheckable(True)
+        self.action_modo.setChecked(False)
+        self.action_modo.toggled.connect(self._toggle_modo)
+        tb.addAction(self.action_modo)
 
         tb.addSeparator()
 
         # configuraciones y ayuda
-        for ico, text, slot in [
-            (QStyle.SP_FileDialogDetailedView,"Configuraciones",self._on_settings),
-            (QStyle.SP_DialogHelpButton,       "Ayuda",self._on_help),
+        for nombre_icono, text, slot in [
+            ("settings-2-fill.svg", "Configuraciones", self._on_settings),
+            ("question-fill.svg",   "Ayuda",           self._on_help),
         ]:
-            a = QAction(self.style().standardIcon(ico), text, self)
+            a = QAction(self._icono(nombre_icono), text, self)
             a.triggered.connect(slot)
             tb.addAction(a)
+
+    def _toggle_modo(self, activado):
+        self._modo_oscuro = activado
+
+        pal = QApplication.palette()
+
+        if activado:
+            # ─── MODO OSCURO ───
+            pal.setColor(QPalette.Window,    QColor("#2b2b2b"))
+            pal.setColor(QPalette.Base,      QColor("#2b2b2b"))
+            pal.setColor(QPalette.WindowText, QColor("#ddd"))
+            pal.setColor(QPalette.Text,      QColor("#FAF2FF"))
+            pal.setColor(QPalette.ButtonText, QColor("#FAF2FF"))
+
+            QApplication.setPalette(pal)
+            QApplication.instance().setStyleSheet("")   # ← AHORA CORRECTO
+
+            self.action_modo.setIcon(self._icono("moon-fill.svg"))
+            self.action_modo.setText("Modo oscuro")
+        else:
+            # ─── MODO CLARO ───
+            pal.setColor(QPalette.Window,    QColor("#ffffff"))
+            pal.setColor(QPalette.Base,      QColor("#ffffff"))
+            pal.setColor(QPalette.WindowText, QColor("#000000"))
+            pal.setColor(QPalette.Text,      QColor("#222625"))
+            pal.setColor(QPalette.ButtonText, QColor("#222625"))
+
+            QApplication.setPalette(pal)
+            QApplication.instance().setStyleSheet("")   # ← TAMBIÉN IGUAL
+
+            self.action_modo.setIcon(self._icono("sun-fill.svg"))
+            self.action_modo.setText("Modo claro")
 
     def _on_cell_changed(self, item):
         r, c = item.row(), item.column()
@@ -550,27 +605,38 @@ class MainWindow(QMainWindow):
 
                 self._on_new()
 
-                self.table.setRowCount(len(imported_features))
-                for i, feat in enumerate(imported_features):
-                    id_item = QTableWidgetItem(str(feat.get("id", i + 1)))
-                    id_item.setFlags(Qt.ItemIsEnabled)
-                    self.table.setItem(i, 0, id_item)
+                row_index = 0  # fila actual en la tabla
 
-                    coords = feat.get("coords")
-                    geom_type_from_kml = feat.get("type") # "Punto", "Polilínea", "Polígono"
+                for feat in imported_features:
+                    feat_id = feat.get("id", row_index + 1)
+                    coords = feat.get("coords", [])
+                    geom_type = feat.get("type", "").lower()
+                    if "polígono" in geom_type and len(coords) >= 3:
+                        if coords[0] != coords[-1]:
+                            coords.append(coords[0])    
 
-                    if geom_type_from_kml == GeometryType.PUNTO and coords and len(coords) == 1:
-                        if isinstance(coords[0], (list,tuple)) and len(coords[0]) == 2:
-                             x_coord, y_coord = coords[0]
-                             self.table.setItem(i, 1, QTableWidgetItem(f"{x_coord:.2f}"))
-                             self.table.setItem(i, 2, QTableWidgetItem(f"{y_coord:.2f}"))
-                        else:
-                             self.table.setItem(i, 1, QTableWidgetItem(""))
-                             self.table.setItem(i, 2, QTableWidgetItem(""))
-                             print(f"Advertencia: Feature Punto ID {feat.get('id')} con formato de coordenadas incorrecto en la importación KML.")
-                    else:
-                        self.table.setItem(i, 1, QTableWidgetItem(""))
-                        self.table.setItem(i, 2, QTableWidgetItem(f"({geom_type_from_kml})")) # Indicar tipo en celda Y
+                    if not coords:
+                        continue
+
+                    for j, (x, y) in enumerate(coords):
+                        if row_index >= self.table.rowCount():
+                            self.table.insertRow(row_index)
+                        id_str = f"{feat_id}.{j+1}" if len(coords) > 1 else str(feat_id)
+                        id_item = QTableWidgetItem(id_str)
+                        id_item.setFlags(Qt.ItemIsEnabled)
+                        self.table.setItem(row_index, 0, id_item)
+                        self.table.setItem(row_index, 1, QTableWidgetItem(f"{x:.2f}"))
+                        self.table.setItem(row_index, 2, QTableWidgetItem(f"{y:.2f}"))
+                        row_index += 1
+
+                    # Activar el checkbox adecuado
+                    if "punto" in geom_type:
+                        self.chk_punto.setChecked(True)
+                    if "polilínea" in geom_type or "linestring" in geom_type:
+                        self.chk_polilinea.setChecked(True)
+                    if "polígono" in geom_type or "polygon" in geom_type:
+                        self.chk_poligono.setChecked(True)
+
 
                 # No se cambian los checkboxes. El usuario debe seleccionar el tipo apropiado
                 # para que _build_manager_from_table construya las geometrías deseadas.
@@ -612,6 +678,75 @@ class MainWindow(QMainWindow):
     def _on_help(self):
         dialog = HelpDialog(self)
         dialog.exec()
+
+    def _on_export_html(self):
+        coords = []
+        for r in range(self.table.rowCount()):
+            xi = self.table.item(r, 1)
+            yi = self.table.item(r, 2)
+            if xi and yi:
+                try:
+                    x = float(xi.text())
+                    y = float(yi.text())
+                    coords.append((x, y))
+                except ValueError:
+                    continue
+
+        if len(coords) < 2:
+            QMessageBox.warning(self, "Geometría insuficiente", "Se necesitan al menos 2 puntos para calcular perímetro.")
+            return
+
+        def distancia(a, b):
+            return ((a[0] - b[0])**2 + (a[1] - b[1])**2) ** 0.5
+
+        perimetro = sum(distancia(coords[i], coords[i+1]) for i in range(len(coords)-1))
+        if self.chk_poligono.isChecked() and len(coords) >= 3:
+            perimetro += distancia(coords[-1], coords[0])
+
+        area = 0
+        if self.chk_poligono.isChecked() and len(coords) >= 3:
+            area = 0.5 * abs(sum(coords[i][0]*coords[i+1][1] - coords[i+1][0]*coords[i][1] for i in range(-1, len(coords)-1)))
+
+        # HTML visual
+        html = "<table border='1' cellpadding='4' cellspacing='0'>"
+        html += "<tr><th>ID</th><th>Este (X)</th><th>Norte (Y)</th></tr>"
+        for r in range(len(coords)):
+            id_val = self.table.item(r, 0).text() if self.table.item(r, 0) else str(r+1)
+            html += f"<tr><td>{id_val}</td><td>{coords[r][0]:.2f}</td><td>{coords[r][1]:.2f}</td></tr>"
+
+        # Fila única combinada para Perímetro
+        html += f"<tr><td colspan='3'><b>Perímetro:</b> {perimetro:.2f} m</td></tr>"
+
+        # Fila única combinada para Área (si aplica)
+        if self.chk_poligono.isChecked() and len(coords) >= 3:
+            html += f"<tr><td colspan='3'><b>Área:</b> {area:.2f} m²</td></tr>"
+
+        html += "</table>"
+
+
+
+        # Diálogo modal visual
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Resumen de Coordenadas")
+        dlg.setMinimumSize(600, 400)
+        layout = QVBoxLayout(dlg)
+
+        view = QTextEdit()
+        view.setReadOnly(True)
+        view.setHtml(html)
+
+        btn_copiar = QPushButton("Copiar código HTML")
+        btn_copiar.clicked.connect(lambda: QApplication.clipboard().setText(html))
+
+        btn_cerrar = QPushButton("Cerrar")
+        btn_cerrar.clicked.connect(dlg.close)
+
+        layout.addWidget(view)
+        layout.addWidget(btn_copiar)
+        layout.addWidget(btn_cerrar)
+
+        dlg.setLayout(layout)
+        dlg.exec()
 
 if __name__ == "__main__":
     import sys
